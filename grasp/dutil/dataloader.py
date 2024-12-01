@@ -53,6 +53,31 @@ def nn_load_data(adata,device,bath_size):
 	return DataLoader(SparseDataset(spdata,device), batch_size=bath_size, shuffle=True)
 
 
+class MemDatasetBase(torch.utils.data.Dataset):
+    def __init__(self, x, y, batch_id,device):
+        self.x = x
+        self.y = y
+        self.batch_id = batch_id
+        self.device = device
+
+    def __len__(self):
+        return len(self.x)
+
+    def __getitem__(self, idx):
+        return self.x[idx].to(self.device), self.y[idx], self.batch_id[idx].to(self.device)
+
+def get_dataloader_mem_base(x,y,batch_id,batch_size,device):
+
+    dataset = MemDatasetBase(
+			x,
+			y,
+			batch_id,
+			device
+		)
+
+    return DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
+
 class MemDataset(torch.utils.data.Dataset):
     def __init__(self, x, y, x_zcommon, batch_id,device):
         self.x = x
@@ -67,6 +92,7 @@ class MemDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         return self.x[idx].to(self.device), self.y[idx], self.x_zcommon[idx].to(self.device), self.batch_id[idx].to(self.device)
 
+    	
 def get_dataloader_mem(x,y,x_zcommon,batch_id,batch_size,device):
 
     dataset = MemDataset(

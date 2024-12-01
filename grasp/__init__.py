@@ -1,5 +1,1 @@
-from . import dutil as du
-from . import model as md
-from . import grasp 
-
-
+from .grasp import create_grasp_object

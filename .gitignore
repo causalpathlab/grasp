@@ -9,10 +9,9 @@ Makefile
 .vscode/
 .snakemake/
 
-/znode/*/data
-/znode/*/results*
-/example
-/figures
+/figures/*/data
+/figures/*/results*
+
 
 io.py
 scratch.py

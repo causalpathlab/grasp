@@ -1,66 +1,279 @@
-from .util.typehint import Adata
 from . import dutil 
 from . import model 
-from . import neighbour
 import torch
 import logging
 import gc
-import os
 import pandas as pd
+import anndata as an
 import numpy as np
 import itertools
 
-from torch_geometric.loader import RandomNodeLoader
 
 
 class grasp(object):
+	"""
+	Initialize grasp model
+
+	Parameters
+	----------
+	data: dict of batch_name:anndata, each anndata is separate batch
+	wdir: path to save model outputs            
+	sample: name of data sample            
+				
+	Returns
+	-------
+	None
+
+	"""
 	def __init__(self, 
 		data: dutil.data.Dataset, 
-		pair_mode:str,
+		sample: str,
 		wdir: str
 		):
 	 
+	 
 		self.data = data
-		self.wdir = wdir
-		logging.basicConfig(filename=self.wdir+'results/4_attncl_train.log',
+		self.sample = sample
+		self.wdir = wdir+sample
+		
+		# dutil.data.create_model_directories(self.wdir,['results'])
+		
+		print(self.wdir)
+		logging.basicConfig(filename=self.wdir+'/results/grasp_model.log',
 		format='%(asctime)s %(levelname)-8s %(message)s',
 		level=logging.INFO,
 		datefmt='%Y-%m-%d %H:%M:%S')
   
 		self.adata_keys = list(self.data.adata_list.keys())
 		 
-		if pair_mode == 'unq':
-			indices = range(len(self.data.adata_list))
-			adata_pairs = [(indices[i], indices[i+1]) for i in range(0, len(indices)-1, 1)]
-			adata_pairs.append((adata_pairs[len(adata_pairs)-1][1],adata_pairs[0][0]))
-			self.adata_pairs = adata_pairs
-		else:
-			indices = list(range(len(self.data.adata_list)))
-			self.adata_pairs = list(itertools.combinations(indices, 2))
-	
-	def get_edges(self,
+		   
+	def set_nn_params(self,
+		params: dict
 		):
-		logging.info("generating global graph...")
-
-		for adata_pair in self.adata_pairs:break
+		self.nn_params = params
   
-		p1 = self.adata_keys[adata_pair[0]]
-		p2 = self.adata_keys[adata_pair[1]]
+	def set_batch_mapping(self):
+		
+		batch_ids_map = {label: idx for idx, label in enumerate(self.adata_keys)}
+		
+		batch_ids = []
+		cell_ids = []
+		for ak in self.adata_keys:
+			cadata = self.data.adata_list[ak]
+			batch_id = [batch_ids_map[x] for x in cadata.obs['batch']]
+			cell_id = [x+'@'+ak for x in cadata.obs.index.values]
+			batch_ids.append(batch_id)
+			cell_ids.append(cell_id)
+		batch_ids = np.concatenate([np.array(sublist) for sublist in batch_ids])
+		cell_ids = np.concatenate([np.array(sublist) for sublist in cell_ids])
+		
+		batch_mapping = { id:blabel for id, blabel in zip(cell_ids,batch_ids)}
 
-		adata_p1 = self.data.adata_list[p1]
-		adata_p2 = self.data.adata_list[p2]
+		self.batch_mapping = batch_mapping
+
+	def train_base(self,
+		input_dim:int,
+		enc_layers:list,
+		latent_dim:int,
+		dec_layers:list,
+		l_rate:float,
+		epochs:int,
+		batch_size:int,
+		device:str
+		):
+
+		num_batches = len(self.adata_keys)
+		grasp_base_model = model.GRASPBaseNet(input_dim,latent_dim,enc_layers,dec_layers,num_batches).to(device)
 	
-		nbr_df = self.grasp_common.uns['nbr_map']
-		nbr_df = nbr_df[nbr_df['batch_pair']==p1+'_'+p2]
-		nbr_map = {x:(y,z) for x,y,z in zip(nbr_df['key'],nbr_df['neighbor'],nbr_df['score'])}
+		logging.info(grasp_base_model)
+  
+		x_c1_batches = []
+		y_batches = []
+		b_ids_batches = []
+  
+		logging.info("Creating dataloader for training grasp base model.")
+  
+		for batch in self.adata_keys:
+			adata_x = self.data.adata_list[batch]
 
-		eval_batch_size = 100
-		eval_total_size = 1000
-		device = 'cuda'
+			data = dutil.nn_load_data_base(adata_x,batch,'cpu',batch_size)
+	
+			for x_c1,y in data:		
+				x_c1_batches.append(x_c1)
+				y_batches.append(np.array(y))
+				b_ids_batches.append(torch.tensor([ self.batch_mapping[y_id] for y_id in y]))
+	
+		all_x_c1 = torch.cat(x_c1_batches, dim=0)  
+		all_y = np.concatenate(y_batches)        
+		all_b_ids = torch.cat(b_ids_batches,dim=0)  
 
-		attn = self.get_gene_attention_estimate(adata_p1,adata_p2,nbr_map,eval_batch_size,eval_total_size,device)
+		train_data =dutil.get_dataloader_mem_base(all_x_c1,all_y,all_b_ids,batch_size,device)
 
-		return attn.cpu().detach().numpy()
+		logging.info('Training... GRASP unique model.')
+		loss = model.grasp_train_base(grasp_base_model,train_data,l_rate,epochs)
+
+		torch.save(grasp_base_model.state_dict(),self.wdir+'/results/grasp_base.model')
+		pd.DataFrame(loss,columns=['ep_l','el_z','el_recon','el_batch']).to_csv(self.wdir+'/results/grasp_base_train_loss.txt.gz',index=False,compression='gzip',header=True)
+		logging.info('Completed training...model saved in '+self.wdir+'/results/grasp_base.model')
+  
+	def eval_base(self,	 
+		input_dim:int,
+		enc_layers:list,
+		latent_dim:int,
+		dec_layers:list,
+		eval_batch_size:int, 
+		device:str
+		):
+
+		num_batches = len(self.adata_keys)
+		grasp_base_model = model.GRASPBaseNet(input_dim,latent_dim,enc_layers,dec_layers,num_batches).to(device)
+	
+		grasp_base_model.load_state_dict(torch.load(self.wdir+'/results/grasp_base.model', map_location=torch.device(device)))
+
+		grasp_base_model.eval()
+  
+		x_c1_batches = []
+		y_batches = []
+		b_ids_batches = []
+  
+		logging.info("Creating dataloader for evaluating grasp unique model.")
+  
+		for batch in self.adata_keys:
+			adata_x = self.data.adata_list[batch]
+
+			data = dutil.nn_load_data_base(adata_x,batch,'cpu',eval_batch_size)
+	
+			for x_c1,y in data:		
+				x_c1_batches.append(x_c1)
+				y_batches.append(np.array(y))
+				b_ids_batches.append(torch.tensor([ self.batch_mapping[y_id] for y_id in y]))
+	
+		all_x_c1 = torch.cat(x_c1_batches, dim=0)  
+		all_y = np.concatenate(y_batches)        
+		all_b_ids = torch.cat(b_ids_batches,dim=0)  
+
+		train_data =dutil.get_dataloader_mem_base(all_x_c1,all_y,all_b_ids,eval_batch_size,device)
+			
+		df_latent = pd.DataFrame()
+  
+		for x_c1,y,b_id in train_data:
+			z,ylabel = model.predict_batch_base(grasp_base_model,x_c1,y)
+			z_u = z[0]
+			df_latent = pd.concat([df_latent,pd.DataFrame(z_u.cpu().detach().numpy(),index=ylabel)],axis=0)
+
+		df_latent.columns = ['base_'+str(x) for x in df_latent.columns]
+		adata = an.AnnData(obs=pd.DataFrame(index=df_latent.index))
+		adata.obsm['base'] = df_latent
+		
+		batch_loc = len(df_latent.index.values[0].split('@'))-1
+		adata.obs['batch'] = [x.split('@')[batch_loc] for x in df_latent.index.values]
+
+		adata.uns['adata_keys'] = self.adata_keys
+		self.result = adata
+
+	def train_unique(self,
+		input_dim:int,
+		enc_layers:list,
+		common_latent_dim:int,
+		unique_latent_dim:int,
+		dec_layers:list,
+		l_rate:float,
+		epochs:int,
+		batch_size:int,
+		device:str
+		):
+
+		num_batches = len(self.adata_keys)
+		grasp_unq_model = model.GRASPUniqueNet(input_dim,common_latent_dim,unique_latent_dim,enc_layers,dec_layers,num_batches).to(device)
+	
+		logging.info(grasp_unq_model)
+  
+		x_c1_batches = []
+		y_batches = []
+		x_zc_batches = []
+		b_ids_batches = []
+  
+		logging.info("Creating dataloader for training grasp unique model.")
+  
+		for batch in self.adata_keys:
+			adata_x = self.data.adata_list[batch]
+			df_zcommon = self.result.obsm['base'][self.result.obs['batch']==batch]
+
+			data = dutil.nn_load_data_with_latent(adata_x,df_zcommon,batch,'cpu',batch_size)
+	
+			for x_c1,y,x_zc in data:		
+				x_c1_batches.append(x_c1)
+				y_batches.append(np.array(y))
+				x_zc_batches.append(x_zc)
+				b_ids_batches.append(torch.tensor([ self.batch_mapping[y_id] for y_id in y]))
+	
+		all_x_c1 = torch.cat(x_c1_batches, dim=0)  
+		all_y = np.concatenate(y_batches)        
+		all_x_zc = torch.cat(x_zc_batches, dim=0)  
+		all_b_ids = torch.cat(b_ids_batches,dim=0)  
+
+		train_data =dutil.get_dataloader_mem(all_x_c1,all_y,all_x_zc,all_b_ids,batch_size,device)
+
+		logging.info('Training... GRASP unique model.')
+		loss = model.grasp_train_unique(grasp_unq_model,train_data,l_rate,epochs)
+
+		torch.save(grasp_unq_model.state_dict(),self.wdir+'/results/grasp_unique.model')
+		pd.DataFrame(loss,columns=['ep_l','el_z','el_recon','el_batch']).to_csv(self.wdir+'/results/grasp_unique_train_loss.txt.gz',index=False,compression='gzip',header=True)
+		logging.info('Completed training...model saved in '+self.wdir+'/results/grasp_unique.model')
+  
+	def eval_unique(self,	 
+		input_dim:int,
+		enc_layers:list,
+		common_latent_dim:int,
+		unique_latent_dim:int,
+		dec_layers:list,
+		eval_batch_size:int, 
+		device:str
+		):
+
+		num_batches = len(self.adata_keys)
+		grasp_unq_model = model.GRASPUniqueNet(input_dim,common_latent_dim,unique_latent_dim,enc_layers,dec_layers,num_batches).to(device)
+	
+		grasp_unq_model.load_state_dict(torch.load(self.wdir+'/results/grasp_unique.model', map_location=torch.device(device)))
+
+		grasp_unq_model.eval()
+  
+		x_c1_batches = []
+		y_batches = []
+		x_zc_batches = []
+		b_ids_batches = []
+  
+		logging.info("Creating dataloader for evaluating grasp unique model.")
+  
+		for batch in self.adata_keys:
+			adata_x = self.data.adata_list[batch]
+			df_zcommon = self.result.obsm['base'][self.result.obs['batch']==batch]
+
+			data = dutil.nn_load_data_with_latent(adata_x,df_zcommon,batch,'cpu',eval_batch_size)
+	
+			for x_c1,y,x_zc in data:		
+				x_c1_batches.append(x_c1)
+				y_batches.append(np.array(y))
+				x_zc_batches.append(x_zc)
+				b_ids_batches.append(torch.tensor([ self.batch_mapping[y_id] for y_id in y]))
+	
+		all_x_c1 = torch.cat(x_c1_batches, dim=0)  
+		all_y = np.concatenate(y_batches)        
+		all_x_zc = torch.cat(x_zc_batches, dim=0)  
+		all_b_ids = torch.cat(b_ids_batches,dim=0)  
+
+		train_data =dutil.get_dataloader_mem(all_x_c1,all_y,all_x_zc,all_b_ids,eval_batch_size,device)
+			
+		df_u_latent = pd.DataFrame()
+  
+		for x_c1,y,x_zc,b_id in train_data:
+			z,ylabel = model.predict_batch_unique(grasp_unq_model,x_c1,y,x_zc)
+			z_u = z[0]
+			df_u_latent = pd.concat([df_u_latent,pd.DataFrame(z_u.cpu().detach().numpy(),index=ylabel)],axis=0)
+
+		df_u_latent = df_u_latent.loc[self.result.obsm['base'].index.values,:]
+		df_u_latent.columns = ['unique_'+str(x) for x in df_u_latent.columns]
+		self.result.obsm['unique'] = df_u_latent
 
 	def train_unique_gnn(self,
 		edge_list:list,
@@ -74,9 +287,8 @@ class grasp(object):
 		batch_size:int,
 		device:str
 		):
-
 		num_batches = len(self.adata_keys)
-		grasp_unq_model = model.nn_gnn.graspUNET(input_dim,common_latent_dim,unique_latent_dim,enc_layers,dec_layers,num_batches).to(device)
+		grasp_unq_model = model.GRASPUniqueGNET(input_dim,common_latent_dim,unique_latent_dim,enc_layers,dec_layers,num_batches).to(device)
 	
 		logging.info(grasp_unq_model)
   
@@ -89,9 +301,9 @@ class grasp(object):
   
 		for batch in self.adata_keys:
 			adata_x = self.data.adata_list[batch]
-			adata_zcommon = self.grasp_common[self.grasp_common.obs['batch']==batch]
+			df_zcommon = self.result.obsm['base'][self.result.obs['batch']==batch]
 
-			data = dutil.nn_load_data_with_latent(adata_x,adata_zcommon,batch,'cpu',batch_size)
+			data = dutil.nn_load_data_with_latent(adata_x,df_zcommon,batch,'cpu',batch_size)
 	
 			for x_c1,y,x_zc in data:		
 				x_c1_batches.append(x_c1)
@@ -107,28 +319,30 @@ class grasp(object):
 		train_data =dutil.GraphDataset(all_x_c1,all_x_idxs,all_x_zc,edge_list,all_b_ids)
 
 		logging.info('Training...unique space model.')
-		loss = model.nn_gnn.train(grasp_unq_model,train_data,l_rate,epochs,device)
+		loss = model.grasp_train_unique_gnn(grasp_unq_model,train_data,l_rate,epochs,device)
 
-		torch.save(grasp_unq_model.state_dict(),self.wdir+'results/nn_unq.model')
-		pd.DataFrame(loss,columns=['ep_l','el_z','el_recon','el_batch']).to_csv(self.wdir+'results/4_unq_train_loss.txt.gz',index=False,compression='gzip',header=True)
-		logging.info('Completed training...model saved in results/nn_unq.model')
+		torch.save(grasp_unq_model.state_dict(),self.wdir+'/results/grasp_unique.model')
+		pd.DataFrame(loss,columns=['ep_l','el_z','el_recon','el_batch']).to_csv(self.wdir+'/results/grasp_unique_train_loss.txt.gz',index=False,compression='gzip',header=True)
+		logging.info('Completed training...model saved in /results/grasp_unique.model')
 
 	def eval_unique_gnn(self,
-        edge_list:list,	 
+		edge_list:list,	 
 		input_dim:int,
 		enc_layers:list,
 		common_latent_dim:int,
 		unique_latent_dim:int,
 		dec_layers:list,
 		eval_batch_size:int, 
-		eval_total_size:int,
 		device:str
 		):
+     
+		from torch_geometric.loader import RandomNodeLoader
+
 
 		num_batches = len(self.adata_keys)
-		grasp_unq_model = model.nn_gnn.graspUNET(input_dim,common_latent_dim,unique_latent_dim,enc_layers,dec_layers,num_batches).to(device)
+		grasp_unq_model = model.GRASPUniqueGNET(input_dim,common_latent_dim,unique_latent_dim,enc_layers,dec_layers,num_batches).to(device)
 	
-		grasp_unq_model.load_state_dict(torch.load(self.wdir+'results/nn_unq.model', map_location=torch.device(device)))
+		grasp_unq_model.load_state_dict(torch.load(self.wdir+'/results/grasp_unique.model', map_location=torch.device(device)))
 
 		grasp_unq_model.eval()
   
@@ -141,9 +355,9 @@ class grasp(object):
   
 		for batch in self.adata_keys:
 			adata_x = self.data.adata_list[batch]
-			adata_zcommon = self.grasp_common[self.grasp_common.obs['batch']==batch]
+			df_zcommon = self.result.obsm['base'][self.result.obs['batch']==batch]
 
-			data = dutil.nn_load_data_with_latent(adata_x,adata_zcommon,batch,'cpu',eval_batch_size)
+			data = dutil.nn_load_data_with_latent(adata_x,df_zcommon,batch,'cpu',eval_batch_size)
 	
 			for x_c1,y,x_zc in data:		
 				x_c1_batches.append(x_c1)
@@ -177,7 +391,7 @@ class grasp(object):
 			y = batch.y.to(device)
 			edge_index = batch.edge_index.to(device)
 
-			z,ylabel = model.nn_gnn.predict_batch(grasp_unq_model,x_c1,y,x_zc,edge_index)
+			z,ylabel = model.predict_batch_unique_gnn(grasp_unq_model,x_c1,y,x_zc,edge_index)
 			z_u = z[0]
 
 			ylabel = ylabel.cpu().detach().numpy()
@@ -186,52 +400,25 @@ class grasp(object):
    
 			df_u_latent = pd.concat([df_u_latent,pd.DataFrame(z_u.cpu().detach().numpy(),index=ylabel_name)],axis=0)
 
-			if df_u_latent.shape[0]>eval_total_size:
-				break
-		return df_u_latent
+		df_u_latent = df_u_latent.loc[self.result.obsm['base'].index.values,:]
+		df_u_latent.columns = ['unique_'+str(x) for x in df_u_latent.columns]
+		self.result.obsm['unique'] = df_u_latent
    
-	def save_common(self):
-		import anndata as an
-  
-		batches = self.latent.keys()
-		df = pd.DataFrame()
-
-		for b in batches:
-			c_df = self.latent[b]
-			c_df.index = [x+'@'+b for x in c_df.index.values]
-
-			df = pd.concat([df,c_df])
-
-		df.columns = ['common_'+str(x) for x in df.columns]
-		adata = an.AnnData(X=df)
-		batch_loc = len(df.index.values[0].split('@'))-1
-		adata.obs['batch'] = [x.split('@')[batch_loc] for x in df.index.values]
-
-		adata.uns['adata_keys'] = self.adata_keys
-		adata.uns['adata_pairs'] = self.adata_pairs
-		adata.uns['nn_params'] = self.nn_params
-		
-		nbr_map_df = pd.DataFrame([
-			{'batch_pair': l1_item, 'key': k, 'neighbor': v[0], 'score': v[1]}
-			for l1_item, inner_map in self.nbr_map.items()
-			for k, v in inner_map.items()
-		])
-		adata.uns['nbr_map'] = nbr_map_df
-		adata.write(self.wdir+'results/grasp.h5ad')
-  
 	def plot_loss(self,
 		tag:str
 		):
 		from grasp.util.plots import plot_loss
-		if tag=='common':
-			plot_loss(self.wdir+'results/4_attncl_train_loss.txt.gz',self.wdir+'results/4_attncl_train_loss.png')
-		elif tag=='unq':
-			plot_loss(self.wdir+'results/4_unq_train_loss.txt.gz',self.wdir+'results/4_unq_attncl_train_loss.png')
-
-
+		if tag=='unq':
+			plot_loss(self.wdir+'/results/grasp_unique_train_loss.txt.gz',self.wdir+'/results/grasp_unique_train_loss.png')
+		elif tag=='base':
+			plot_loss(self.wdir+'/results/grasp_base_train_loss.txt.gz',self.wdir+'/results/grasp_base_train_loss.png')
+	
+	def save_model(self):
+		self.result.write(self.wdir+'/results/grasp.h5ad',compression='gzip')
+		
 def create_grasp_object(
-	adata_list:Adata, 
-	pair_mode:str,
+	adata_list:an.AnnData,
+	sample:str, 
 	wdir:str
 	):
-	return grasp(dutil.data.Dataset(adata_list),pair_mode,wdir)
+	return grasp(dutil.data.Dataset(adata_list),sample,wdir)
