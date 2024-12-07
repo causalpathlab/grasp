@@ -91,8 +91,8 @@ def grasp_train_unique_gnn(model,data,l_rate,epochs,device):
 			edge_index = batch.edge_index.to(device)
 			batch_labels = data.batch_labels.x[batch.y].to(device)
   
-			z_u, px_s, px_r, px_d, batch_pred = model(x_c1, x_zc, edge_index)
-			train_loss_z = minimal_overlap_loss(x_zc,z_u)
+			z_b, z_r, px_s, px_r, px_d, batch_pred = model(x_c1, x_zc, edge_index)
+			train_loss_z = minimal_overlap_loss(z_b,z_r)
 			train_loss_recon = get_zinb_reconstruction_loss(x_c1,px_s, px_r, px_d)
 			train_loss_batch = criterion(batch_pred, batch_labels)
 			train_loss = train_loss_z + train_loss_recon + train_loss_batch
