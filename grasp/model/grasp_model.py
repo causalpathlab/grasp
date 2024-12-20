@@ -134,9 +134,10 @@ class GRASPUniqueGNET(nn.Module):
 		super(GRASPUniqueGNET,self).__init__()
 		self.u_encoder = Stacklayers(input_dim,enc_layers)
 
-		self.u_gnn = SAGEConv(unique_latent_dim , unique_latent_dim )
+		self.be_gnn = SAGEConv(unique_latent_dim , unique_latent_dim)
+		self.ge_gnn = SAGEConv(unique_latent_dim , unique_latent_dim)
     
-		decoder_in_dim = common_latent_dim + unique_latent_dim 
+		decoder_in_dim = unique_latent_dim + unique_latent_dim + unique_latent_dim
 		self.zinb_scale = nn.Linear(decoder_in_dim, input_dim) 
 		self.zinb_dropout = nn.Linear(decoder_in_dim, input_dim)
 		self.zinb_dispersion = nn.Parameter(torch.randn(input_dim), requires_grad=True)
@@ -144,22 +145,24 @@ class GRASPUniqueGNET(nn.Module):
 		self.batch_discriminator = nn.Linear(unique_latent_dim, num_batches)
 
 	
-	def forward(self,x_c1,z_m,edge_index):	
+	def forward(self,x_c1,z_m,edge_index,edge_index_sec):	
 		
 		x_c1 = torch.log1p(x_c1)
   
 		z_mix = self.u_encoder(x_c1)
 
-		z_r = self.u_gnn(z_mix, edge_index)
-		  
-		z_b = F.relu(z_m - z_r)
+		z_be = self.be_gnn(z_mix, edge_index)
   
-		h = torch.cat((z_b, z_r), dim=1)
+		z_ge = self.ge_gnn(z_mix, edge_index_sec)
+		  
+		z_unknown = z_m - z_be - z_ge
+  
+		h = torch.cat((z_be, z_ge,z_unknown), dim=1)
   
 		px_scale = torch.exp(self.zinb_scale(h))  
 		px_dropout = self.zinb_dropout(h)  
 		px_rate = self.zinb_dispersion.exp()
   
-		batch_pred = self.batch_discriminator(z_r)
+		batch_pred = self.batch_discriminator(z_be)
 		
-		return z_b,z_r,px_scale,px_rate,px_dropout,batch_pred
+		return z_be,z_ge,px_scale,px_rate,px_dropout,batch_pred

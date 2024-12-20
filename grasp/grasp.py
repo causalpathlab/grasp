@@ -70,6 +70,18 @@ class grasp(object):
 
 		self.batch_mapping = batch_mapping
 
+	def set_metadata(self):
+		
+		df_meta = pd.DataFrame()
+		for ad_name in self.data.adata_list:
+			ad = self.data.adata_list[ad_name]
+			df_meta = pd.concat([df_meta,ad.obs])
+		
+		df_meta.index = [x+'@'+y for x,y in zip(df_meta.index.values,df_meta['batch'])]
+		sel_col = [ x for x in df_meta.columns if x not in ['batch','batch_id']]
+		
+		self.result.obs = pd.merge(self.result.obs,df_meta[sel_col],left_index=True,right_index=True,how='left')
+		
 	def train_base(self,
 		input_dim:int,
 		enc_layers:list,
@@ -169,6 +181,8 @@ class grasp(object):
 
 		adata.uns['adata_keys'] = self.adata_keys
 		self.result = adata
+		self.set_metadata()
+  
 
 	def train_unique(self,
 		input_dim:int,
@@ -276,6 +290,7 @@ class grasp(object):
 
 	def train_unique_gnn(self,
 		edge_list:list,
+		edge_list_sec:list,
 		input_dim:int,
 		enc_layers:list,
 		common_latent_dim:int,
@@ -315,7 +330,7 @@ class grasp(object):
 		all_x_zc = torch.cat(x_zc_batches, dim=0)  
 		all_b_ids = torch.cat(b_ids_batches,dim=0)  
 
-		train_data =dutil.GraphDataset(all_x_c1,all_x_idxs,all_x_zc,edge_list,all_b_ids)
+		train_data =dutil.GraphDataset(all_x_c1,all_x_idxs,all_x_zc,edge_list,edge_list_sec,all_b_ids)
 
 		logging.info('Training...unique space model.')
 		loss = model.grasp_train_unique_gnn(grasp_unq_model,train_data,l_rate,epochs,device)
@@ -326,6 +341,7 @@ class grasp(object):
 
 	def eval_unique_gnn(self,
 		edge_list:list,	 
+		edge_list_sec:list,	 
 		input_dim:int,
 		enc_layers:list,
 		common_latent_dim:int,
@@ -334,7 +350,7 @@ class grasp(object):
 		eval_batch_size:int, 
 		device:str
 		):
-     
+	 
 		from torch_geometric.loader import RandomNodeLoader
 
 
@@ -381,8 +397,8 @@ class grasp(object):
 		x_graph = data.x_data  
 		x_data_loader = RandomNodeLoader(x_graph, num_parts=25, shuffle=True)
 
-		df_b_latent = pd.DataFrame()
-		df_r_latent = pd.DataFrame()
+		df_be_latent = pd.DataFrame()
+		df_ge_latent = pd.DataFrame()
   
 		for batch in x_data_loader:
 			   
@@ -392,23 +408,23 @@ class grasp(object):
 			edge_index = batch.edge_index.to(device)
 
 			z,ylabel = model.predict_batch_unique_gnn(grasp_unq_model,x_c1,y,x_zc,edge_index)
-			z_b = z[0]
-			z_r = z[1]
+			z_be = z[0]
+			z_ge = z[1]
 
 			ylabel = ylabel.cpu().detach().numpy()
 
 			ylabel_name = [y_batches[x] for x in ylabel]
    
-			df_b_latent = pd.concat([df_b_latent,pd.DataFrame(z_b.cpu().detach().numpy(),index=ylabel_name)],axis=0)
-			df_r_latent = pd.concat([df_r_latent,pd.DataFrame(z_r.cpu().detach().numpy(),index=ylabel_name)],axis=0)
+			df_be_latent = pd.concat([df_be_latent,pd.DataFrame(z_be.cpu().detach().numpy(),index=ylabel_name)],axis=0)
+			df_ge_latent = pd.concat([df_ge_latent,pd.DataFrame(z_ge.cpu().detach().numpy(),index=ylabel_name)],axis=0)
 
-		df_b_latent = df_b_latent.loc[self.result.obsm['base'].index.values,:]
-		df_b_latent.columns = ['batch_'+str(x) for x in df_b_latent.columns]
-		self.result.obsm['batch'] = df_b_latent
+		df_be_latent = df_be_latent.loc[self.result.obsm['base'].index.values,:]
+		df_be_latent.columns = ['batch_'+str(x) for x in df_be_latent.columns]
+		self.result.obsm['batch'] = df_be_latent
   
-		df_r_latent = df_r_latent.loc[self.result.obsm['base'].index.values,:]
-		df_r_latent.columns = ['residual_'+str(x) for x in df_r_latent.columns]
-		self.result.obsm['residual'] = df_r_latent
+		df_ge_latent = df_ge_latent.loc[self.result.obsm['base'].index.values,:]
+		df_ge_latent.columns = ['group_'+str(x) for x in df_ge_latent.columns]
+		self.result.obsm['group'] = df_ge_latent
   
    
 	def plot_loss(self,
