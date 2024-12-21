@@ -8,7 +8,7 @@ import pandas as pd
 
 
 
-sample = 'sim4'
+sample = 'sim1'
 wdir = '/home/BCCRC.CA/ssubedi/projects/experiments/grasp/figures/'+sample
 
 ############ read original data as adata list

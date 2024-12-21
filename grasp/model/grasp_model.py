@@ -145,17 +145,18 @@ class GRASPUniqueGNET(nn.Module):
 		self.batch_discriminator = nn.Linear(unique_latent_dim, num_batches)
 
 	
-	def forward(self,x_c1,z_m,edge_index,edge_index_sec):	
+	def forward(self,x_c1, x_zc, x_be_edge_index, x_ge_edge_index):	
 		
 		x_c1 = torch.log1p(x_c1)
   
 		z_mix = self.u_encoder(x_c1)
-
-		z_be = self.be_gnn(z_mix, edge_index)
   
-		z_ge = self.ge_gnn(z_mix, edge_index_sec)
+
+		z_be = self.be_gnn(z_mix, x_be_edge_index)
+  
+		z_ge = self.ge_gnn(z_mix, x_ge_edge_index)
 		  
-		z_unknown = z_m - z_be - z_ge
+		z_unknown = x_zc - z_be - z_ge
   
 		h = torch.cat((z_be, z_ge,z_unknown), dim=1)
   

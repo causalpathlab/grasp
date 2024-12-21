@@ -12,5 +12,5 @@ def predict_batch_unique(model,x_c1,y,x_zc):
 	return model(x_c1,x_zc),y
 
 
-def predict_batch_unique_gnn(model,x_c1,y,x_zc,edge_index):
-	return model(x_c1, x_zc, edge_index),y
+def predict_batch_unique_gnn(model,x_c1,x_zc,x_be_edge_index,x_ge_edge_index):
+	return model(x_c1,x_zc,x_be_edge_index,x_ge_edge_index)

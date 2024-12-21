@@ -35,7 +35,7 @@ dec_layers = [128,128]
 
 
 latent_dim=15
-grasp_object.train_base(input_dim, enc_layers,latent_dim,dec_layers,l_rate=0.001,epochs=2,batch_size=128,device='cuda')
+# grasp_object.train_base(input_dim, enc_layers,latent_dim,dec_layers,l_rate=0.001,epochs=150,batch_size=128,device='cuda')
 grasp_object.plot_loss(tag='base')
 
 eval_batch_size = 10
@@ -64,47 +64,46 @@ for t in [1e-5,1e-4,1e-3,1e-2,1e-1,0.2,0.5,0.75,0.9]:
     ce = (masked_correlation_matrix>t).sum()
     print(t,ce,(ce/total_edges)*100)
 
-distance_thres = 0.5
+distance_thres = 0.1
 dists_mask = masked_correlation_matrix > distance_thres
-edge_list = np.transpose(np.nonzero(dists_mask)).T
+edge_list = np.transpose(np.nonzero(dists_mask))
 print(edge_list)
 
 
 
-# group_labels = grasp_object.result.obs.celltype.values
-# group_mask = (group_labels[:, None] != group_labels) 
-# group_mask = group_mask.astype(float)
+group_labels = grasp_object.result.obs.celltype.values
+group_mask = (group_labels[:, None] != group_labels) 
+group_mask = group_mask.astype(float)
 
-# group_mask.sum()
-# batch_mask.sum()
+group_mask.sum()
+batch_mask.sum()
 
-# update_mask = np.logical_and(group_mask == 1, batch_mask == 1).astype(float)
+update_mask = np.logical_and(group_mask == 1, batch_mask == 1).astype(float)
 
-# update_mask.sum()
+update_mask.sum()
 
-# masked_correlation_matrix = attn * update_mask
+masked_correlation_matrix = attn * update_mask
 
 
-# N=masked_correlation_matrix.shape[0]
-# total_edges = (N*(N-1))/2
-# for t in [1e-5,1e-4,1e-3,1e-2,1e-1,0.2,0.5,0.75,0.9]:
-#     ce = (masked_correlation_matrix>t).sum()
-#     print(t,ce,(ce/total_edges)*100)
+N=masked_correlation_matrix.shape[0]
+total_edges = (N*(N-1))/2
+for t in [1e-5,1e-4,1e-3,1e-2,1e-1,0.2,0.5,0.75,0.9]:
+    ce = (masked_correlation_matrix>t).sum()
+    print(t,ce,(ce/total_edges)*100)
 
-# distance_thres = 0.5
-# dists_mask = masked_correlation_matrix > distance_thres
-# np.fill_diagonal(dists_mask, 0)
-# edge_list_sec = np.transpose(np.nonzero(dists_mask)).tolist()
+distance_thres = 0.1
+dists_mask = masked_correlation_matrix > distance_thres
+np.fill_diagonal(dists_mask, 0)
+edge_list_sec = np.transpose(np.nonzero(dists_mask))
 
-edge_list_sec = edge_list.copy()
 
-grasp_object.train_unique_gnn(edge_list,edge_list_sec,input_dim, enc_layers,common_latent_dim,unique_latent_dim,dec_layers,l_rate=0.001,epochs=20,batch_size=128,device='cpu')
+# grasp_object.train_unique_gnn(edge_list,edge_list_sec,input_dim, enc_layers,common_latent_dim,unique_latent_dim,dec_layers,l_rate=0.001,epochs=100,batch_size=128,device='cpu')
 
 
 grasp_object.plot_loss(tag='unq')
 
 
 eval_batch_size = 10
-grasp_object.eval_unique_gnn(edge_list,input_dim, enc_layers,common_latent_dim,unique_latent_dim,dec_layers,eval_batch_size,device='cuda')
+grasp_object.eval_unique_gnn(edge_list,edge_list_sec,input_dim, enc_layers,common_latent_dim,unique_latent_dim,dec_layers,eval_batch_size,device='cuda')
 
 grasp_object.save_model()

@@ -8,6 +8,8 @@ import anndata as an
 import numpy as np
 import itertools
 
+from torch_geometric.data import ClusterData, ClusterLoader
+from itertools import cycle
 
 
 class grasp(object):
@@ -289,8 +291,8 @@ class grasp(object):
 		self.result.obsm['unique'] = df_u_latent
 
 	def train_unique_gnn(self,
-		edge_list:list,
-		edge_list_sec:list,
+		edge_list_be:list,
+		edge_list_ge:list,
 		input_dim:int,
 		enc_layers:list,
 		common_latent_dim:int,
@@ -330,7 +332,7 @@ class grasp(object):
 		all_x_zc = torch.cat(x_zc_batches, dim=0)  
 		all_b_ids = torch.cat(b_ids_batches,dim=0)  
 
-		train_data =dutil.GraphDataset(all_x_c1,all_x_idxs,all_x_zc,edge_list,edge_list_sec,all_b_ids)
+		train_data = dutil.GraphDataset(all_x_c1,all_x_idxs,edge_list_be,edge_list_ge,all_x_zc,all_b_ids)
 
 		logging.info('Training...unique space model.')
 		loss = model.grasp_train_unique_gnn(grasp_unq_model,train_data,l_rate,epochs,device)
@@ -340,8 +342,8 @@ class grasp(object):
 		logging.info('Completed training...model saved in /results/grasp_unique.model')
 
 	def eval_unique_gnn(self,
-		edge_list:list,	 
-		edge_list_sec:list,	 
+		edge_list_be:list,	 
+		edge_list_ge:list,	 
 		input_dim:int,
 		enc_layers:list,
 		common_latent_dim:int,
@@ -389,31 +391,43 @@ class grasp(object):
 		for arr in y_batches:
 			for yl in arr:
 				y_batches_n.append(yl)
-		
 		y_batches = np.array(y_batches_n)
 
-		data =dutil.GraphDataset(all_x_c1,all_x_idxs,all_x_zc,edge_list,all_b_ids)
-
-		x_graph = data.x_data  
-		x_data_loader = RandomNodeLoader(x_graph, num_parts=25, shuffle=True)
+		dataset = dutil.GraphDataset(all_x_c1,all_x_idxs,edge_list_be,edge_list_ge,all_x_zc,all_b_ids)
+  
+		x_be_graph = dataset.x_be_data
+		x_be_data = ClusterData(x_be_graph, num_parts=10, recursive=False)
+		x_be_loader = ClusterLoader(x_be_data, batch_size=1, shuffle=True,num_workers=1)
+ 
 
 		df_be_latent = pd.DataFrame()
 		df_ge_latent = pd.DataFrame()
   
-		for batch in x_data_loader:
-			   
-			x_zc = data.x_zc.x[batch.y].to(device)
-			x_c1 = batch.x.to(device)
-			y = batch.y.to(device)
-			edge_index = batch.edge_index.to(device)
+		for x_be_batch in x_be_loader:
+	  
+			x_c1 = x_be_batch.x.to(device)
+			x_be_edge_index = x_be_batch.edge_index.to(device)
+			x_indxs = x_be_batch.y
 
-			z,ylabel = model.predict_batch_unique_gnn(grasp_unq_model,x_c1,y,x_zc,edge_index)
+			x_zc = dataset.x_zc_data.x[x_indxs,:].to(device)
+			batch_labels = dataset.x_batch_data.x[x_indxs].to(device)
+   
+			mask_0 = torch.isin(dataset.x_ge_data.x[0],x_indxs)
+			mask_1 = torch.isin(dataset.x_ge_data.x[1],x_indxs)
+			mask = mask_0 & mask_1
+   
+			x_ge_edge_index = dataset.x_ge_data.x[:,mask]
+			index_map = {value.item(): idx for idx, value in enumerate(x_indxs)}
+			x_ge_edge_index_be_space = torch.tensor([[index_map[node.item()] for node in edge] for edge in x_ge_edge_index])
+			x_ge_edge_index_be_space = x_ge_edge_index_be_space.to(device)
+
+			z = model.predict_batch_unique_gnn(grasp_unq_model,x_c1,x_zc,x_be_edge_index,x_ge_edge_index_be_space)
 			z_be = z[0]
 			z_ge = z[1]
 
-			ylabel = ylabel.cpu().detach().numpy()
+			x_indxs = x_indxs.cpu().detach().numpy()
 
-			ylabel_name = [y_batches[x] for x in ylabel]
+			ylabel_name = [y_batches[x] for x in x_indxs]
    
 			df_be_latent = pd.concat([df_be_latent,pd.DataFrame(z_be.cpu().detach().numpy(),index=ylabel_name)],axis=0)
 			df_ge_latent = pd.concat([df_ge_latent,pd.DataFrame(z_ge.cpu().detach().numpy(),index=ylabel_name)],axis=0)
