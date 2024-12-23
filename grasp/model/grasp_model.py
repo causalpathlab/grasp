@@ -88,82 +88,50 @@ class GRASPBaseNet(nn.Module):
 
 ###### GRASP UNIQUE MODEL #######
 
-class GRASPUniqueNet(nn.Module):
-	def __init__(self,input_dim,common_latent_dim,unique_latent_dim,enc_layers,dec_layers,num_batches):
-		super(GRASPUniqueNet,self).__init__()
-		self.u_encoder = MLP(input_dim,enc_layers)
-
-		concat_dim = common_latent_dim + unique_latent_dim 
-		self.u_decoder = MLP(concat_dim,dec_layers)
-  
-		decoder_in_dim = dec_layers[len(dec_layers)-1]  
-		self.zinb_scale = nn.Linear(decoder_in_dim, input_dim) 
-		self.zinb_dropout = nn.Linear(decoder_in_dim, input_dim)
-		self.zinb_dispersion = nn.Parameter(torch.randn(input_dim), requires_grad=True)
-		
-		self.batch_discriminator = nn.Linear(unique_latent_dim, num_batches)
-
-	
-	def forward(self,x_c1,x_zcommon):	
- 
-		row_sums = x_c1.sum(dim=1, keepdim=True)
-		x_norm = torch.div(x_c1, row_sums) * 1e4
-  
-		z_unique = self.u_encoder(x_norm.float())
-		
-		z_combined = torch.cat((x_zcommon, z_unique), dim=1)
-
-		h = self.u_decoder(z_combined)
-  
-		px_scale = torch.exp(self.zinb_scale(h))  
-		px_dropout = self.zinb_dropout(h)  
-		px_rate = self.zinb_dispersion.exp()
-  
-		batch_pred = self.batch_discriminator(z_unique)
-		
-		return z_unique,px_scale,px_rate,px_dropout,batch_pred
-
-
-###### GRASP UNIQUE GRAPH MODEL #######
-
 from torch_geometric.loader import RandomNodeLoader
 from torch_geometric.nn import SAGEConv
 
 class GRASPUniqueGNET(nn.Module):
-	def __init__(self,input_dim,common_latent_dim,unique_latent_dim,enc_layers,dec_layers,num_batches):
+	def __init__(self,input_dim,unique_latent_dim,enc_layers,num_batches,num_groups):
 		super(GRASPUniqueGNET,self).__init__()
 		self.u_encoder = Stacklayers(input_dim,enc_layers)
 
 		self.be_gnn = SAGEConv(unique_latent_dim , unique_latent_dim)
 		self.ge_gnn = SAGEConv(unique_latent_dim , unique_latent_dim)
-    
+  
 		decoder_in_dim = unique_latent_dim + unique_latent_dim + unique_latent_dim
+  
+		self.un_mlp = torch.nn.Sequential(
+			torch.nn.Linear(decoder_in_dim, unique_latent_dim),
+			torch.nn.ReLU(),
+			torch.nn.Linear(unique_latent_dim, unique_latent_dim)
+		)
+    
 		self.zinb_scale = nn.Linear(decoder_in_dim, input_dim) 
 		self.zinb_dropout = nn.Linear(decoder_in_dim, input_dim)
 		self.zinb_dispersion = nn.Parameter(torch.randn(input_dim), requires_grad=True)
 		
 		self.batch_discriminator = nn.Linear(unique_latent_dim, num_batches)
+		self.group_discriminator = nn.Linear(unique_latent_dim, num_groups)
 
 	
-	def forward(self,x_c1, x_zc, x_be_edge_index, x_ge_edge_index):	
-		
-		x_c1 = torch.log1p(x_c1)
-  
+	def forward(self,x_c1, x_be_edge_index, x_ge_edge_index):	
 		z_mix = self.u_encoder(x_c1)
   
-
 		z_be = self.be_gnn(z_mix, x_be_edge_index)
   
 		z_ge = self.ge_gnn(z_mix, x_ge_edge_index)
 		  
-		z_unknown = x_zc - z_be - z_ge
+		z_un = self.un_mlp(torch.cat((z_mix, z_be, z_ge), dim=1))
   
-		h = torch.cat((z_be, z_ge,z_unknown), dim=1)
+		h = torch.cat((z_be, z_ge,z_un), dim=1)
   
 		px_scale = torch.exp(self.zinb_scale(h))  
 		px_dropout = self.zinb_dropout(h)  
 		px_rate = self.zinb_dispersion.exp()
   
 		batch_pred = self.batch_discriminator(z_be)
+  
+		group_pred = self.group_discriminator(z_ge)
 		
-		return z_be,z_ge,px_scale,px_rate,px_dropout,batch_pred
+		return z_mix,z_be,z_ge,z_un,px_scale,px_rate,px_dropout,batch_pred,group_pred

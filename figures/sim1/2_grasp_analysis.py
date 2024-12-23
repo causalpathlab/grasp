@@ -51,3 +51,15 @@ sc.tl.leiden(grasp_adata)
 sc.pl.umap(grasp_adata,color=['batch','celltype'])
 plt.savefig(wdir+'/results/grasp_group_umap.png')
 
+sc.pp.neighbors(grasp_adata,use_rep='mix')
+sc.tl.umap(grasp_adata)
+sc.tl.leiden(grasp_adata)
+sc.pl.umap(grasp_adata,color=['batch','celltype'])
+plt.savefig(wdir+'/results/grasp_mix_umap.png')
+
+sc.pp.neighbors(grasp_adata,use_rep='unknown')
+sc.tl.umap(grasp_adata)
+sc.tl.leiden(grasp_adata)
+sc.pl.umap(grasp_adata,color=['batch','celltype'])
+plt.savefig(wdir+'/results/grasp_unknown_umap.png')
+

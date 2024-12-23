@@ -15,11 +15,25 @@ def minimize_similarity(z_1, z_2):
 	return torch.mean(torch.abs(cosine_similarity))
 
 
-def minimal_overlap_loss(z_1, z_2):
+def minimal_overlap_loss_pair(z_1, z_2):
 
 	# decrease similarity between latent spaces
     alignment_loss = minimize_similarity(z_1, z_2)
         
     total_loss = alignment_loss
 
+    return total_loss
+
+def minimal_overlap_loss_triplet(z1, z2, z3):
+
+    z1 = F.normalize(z1, p=2, dim=1)
+    z2 = F.normalize(z2, p=2, dim=1)
+    z3 = F.normalize(z3, p=2, dim=1)
+    
+    sim_z1_z2 = torch.mean(torch.sum(z1 * z2, dim=1))  
+    sim_z1_z3 = torch.mean(torch.sum(z1 * z3, dim=1))
+    sim_z2_z3 = torch.mean(torch.sum(z2 * z3, dim=1))
+    
+    total_loss = sim_z1_z2 + sim_z1_z3 + sim_z2_z3
+    
     return total_loss
