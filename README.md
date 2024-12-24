@@ -1,7 +1,7 @@
 # GRASP - Graphical Representation Analysis of Single-cell Perturbations
 
 <div align="center">
-    <img src="grasp_model.png" alt="Logo" width="300" height="200">
+    <img src="images/grasp_model.png" alt="Logo" width="300" height="200">
 </div>
 
 

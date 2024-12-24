@@ -29,7 +29,6 @@ __pycache__/
 *.txt
 *.txt.gz
 *.h5*
-*.png
 *.log
 *.out
 *.model
